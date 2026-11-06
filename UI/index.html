@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Waypoint Planner</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+  html, body { height: 100%; margin: 0; font-family: system-ui, sans-serif; }
+  #app { display: flex; height: 100%; }
+  #map { flex: 1; }
+  #panel { width: 300px; padding: 12px; box-sizing: border-box; overflow-y: auto; background: #f4f4f6; border-left: 1px solid #ccc; }
+  button { display: block; width: 100%; margin: 4px 0; padding: 8px; font-size: 14px; cursor: pointer; }
+  button.active { background: #2563eb; color: #fff; }
+  textarea { width: 100%; height: 200px; font-family: monospace; font-size: 12px; box-sizing: border-box; }
+  #status { font-size: 13px; margin: 8px 0; min-height: 3em; }
+  .wp-icon { background: #2563eb; color: #fff; border-radius: 50%; width: 24px; height: 24px; line-height: 24px; text-align: center; font-weight: bold; border: 2px solid #fff; box-shadow: 0 0 3px #000; }
+  .wp-icon.bad { background: #dc2626; }
+  h3 { margin: 12px 0 4px; }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="map"></div>
+  <div id="panel">
+    <h3>Mode</h3>
+    <button id="btnWp" class="active">Add waypoints</button>
+    <button id="btnBd">Draw boundary</button>
+    <button id="btnClose">Close boundary</button>
+    <h3>Edit</h3>
+    <button id="btnUndo">Undo last point</button>
+    <button id="btnClear">Clear all</button>
+    <button id="btnLoc">Center on my location</button>
+    <h3>Export</h3>
+    <button id="btnCopy">Copy JSON</button>
+    <button id="btnDl">Download mission.json</button>
+    <div id="status"></div>
+    <textarea id="out" readonly></textarea>
+    <p style="font-size:12px;color:#555">Waypoints are draggable. A red waypoint is outside the boundary.</p>
+  </div>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+// ---------- Map + tile layers ----------
+const map = L.map('map').setView([39.5, -98.35], 4); // fallback: center of the US
+
+const osm = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  maxZoom: 19, attribution: '&copy; OpenStreetMap contributors'
+});
+const sat = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+  maxZoom: 19, attribution: 'Tiles &copy; Esri'
+});
+sat.addTo(map);
+L.control.layers({ 'Satellite (Esri)': sat, 'Street (OSM)': osm }).addTo(map);
+L.control.scale({ imperial: false }).addTo(map);
+
+// ---------- State ----------
+let mode = 'waypoint';        // 'waypoint' | 'boundary'
+let waypoints = [];           // [{lat, lng, marker}]
+let boundary = [];            // [[lat, lng], ...]
+let boundaryClosed = false;
+const wpLine = L.polyline([], { color: '#2563eb', weight: 3 }).addTo(map);
+let bdShape = null;
+const bdVertices = L.layerGroup().addTo(map);
+
+// ---------- Geometry ----------
+// Ray casting point-in-polygon. Points are [lng, lat] so x = lng, y = lat.
+function pointInPolygon(lat, lng, poly) {
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const [yi, xi] = poly[i], [yj, xj] = poly[j];
+    if ((yi > lat) !== (yj > lat) &&
+        lng < (xj - xi) * (lat - yi) / (yj - yi) + xi) inside = !inside;
+  }
+  return inside;
+}
+
+// ---------- Rendering ----------
+function iconFor(n, bad) {
+  return L.divIcon({ className: '', html: `<div class="wp-icon ${bad ? 'bad' : ''}">${n}</div>`, iconSize: [24, 24], iconAnchor: [12, 12] });
+}
+
+function redraw() {
+  // boundary
+  if (bdShape) { map.removeLayer(bdShape); bdShape = null; }
+  bdVertices.clearLayers();
+  if (boundary.length >= 2) {
+    bdShape = boundaryClosed
+      ? L.polygon(boundary, { color: '#16a34a', weight: 2, fillOpacity: 0.1 })
+      : L.polyline(boundary, { color: '#16a34a', weight: 2, dashArray: '6 6' });
+    bdShape.addTo(map);
+  }
+  boundary.forEach(p => L.circleMarker(p, { radius: 4, color: '#16a34a', fillOpacity: 1 }).addTo(bdVertices));
+
+  // waypoints
+  let outside = 0;
+  waypoints.forEach((w, i) => {
+    const bad = boundaryClosed && !pointInPolygon(w.lat, w.lng, boundary);
+    if (bad) outside++;
+    w.marker.setIcon(iconFor(i + 1, bad));
+  });
+  wpLine.setLatLngs(waypoints.map(w => [w.lat, w.lng]));
+
+  // status + export
+  const s = [];
+  s.push(`${waypoints.length} waypoint(s)`);
+  s.push(boundaryClosed ? `boundary closed (${boundary.length} vertices)` : `boundary: ${boundary.length} vertices (not closed)`);
+  if (outside) s.push(`<b style="color:#dc2626">${outside} waypoint(s) outside boundary</b>`);
+  document.getElementById('status').innerHTML = s.join('<br>');
+  document.getElementById('out').value = JSON.stringify(exportData(), null, 2);
+}
+
+function exportData() {
+  return {
+    waypoints: waypoints.map((w, i) => ({ id: i + 1, lat: +w.lat.toFixed(7), lon: +w.lng.toFixed(7) })),
+    boundary: boundaryClosed ? boundary.map(p => ({ lat: +p[0].toFixed(7), lon: +p[1].toFixed(7) })) : []
+  };
+}
+
+// ---------- Actions ----------
+function addWaypoint(latlng) {
+  const marker = L.marker(latlng, { draggable: true, icon: iconFor(waypoints.length + 1, false) }).addTo(map);
+  const w = { lat: latlng.lat, lng: latlng.lng, marker };
+  marker.on('drag', e => { w.lat = e.latlng.lat; w.lng = e.latlng.lng; redraw(); });
+  marker.on('contextmenu', () => { // right-click deletes
+    map.removeLayer(marker);
+    waypoints = waypoints.filter(x => x !== w);
+    redraw();
+  });
+  waypoints.push(w);
+  redraw();
+}
+
+map.on('click', e => {
+  if (mode === 'waypoint') addWaypoint(e.latlng);
+  else if (!boundaryClosed) { boundary.push([e.latlng.lat, e.latlng.lng]); redraw(); }
+});
+
+function setMode(m) {
+  mode = m;
+  document.getElementById('btnWp').classList.toggle('active', m === 'waypoint');
+  document.getElementById('btnBd').classList.toggle('active', m === 'boundary');
+}
+document.getElementById('btnWp').onclick = () => setMode('waypoint');
+document.getElementById('btnBd').onclick = () => { if (boundaryClosed) { boundaryClosed = false; } setMode('boundary'); redraw(); };
+document.getElementById('btnClose').onclick = () => {
+  if (boundary.length < 3) { alert('Need at least 3 vertices.'); return; }
+  boundaryClosed = true; setMode('waypoint'); redraw();
+};
+document.getElementById('btnUndo').onclick = () => {
+  if (mode === 'waypoint' && waypoints.length) { map.removeLayer(waypoints.pop().marker); }
+  else if (mode === 'boundary' && boundary.length) { boundary.pop(); boundaryClosed = false; }
+  redraw();
+};
+document.getElementById('btnClear').onclick = () => {
+  waypoints.forEach(w => map.removeLayer(w.marker));
+  waypoints = []; boundary = []; boundaryClosed = false; redraw();
+};
+document.getElementById('btnLoc').onclick = locate;
+document.getElementById('btnCopy').onclick = () => navigator.clipboard.writeText(document.getElementById('out').value);
+document.getElementById('btnDl').onclick = () => {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([document.getElementById('out').value], { type: 'application/json' }));
+  a.download = 'mission.json'; a.click();
+};
+
+function locate() {
+  if (!navigator.geolocation) return;
+  navigator.geolocation.getCurrentPosition(
+    p => map.setView([p.coords.latitude, p.coords.longitude], 18),
+    () => alert('Location unavailable. Pan/zoom the map manually.')
+  );
+}
+
+redraw();
+locate();
+</script>
+</body>
+</html>
