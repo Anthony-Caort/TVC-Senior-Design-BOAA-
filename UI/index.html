@@ -4,11 +4,24 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Waypoint Planner</title>
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<link rel="stylesheet" href="lib/leaflet/leaflet.css">
 <style>
   html, body { height: 100%; margin: 0; font-family: system-ui, sans-serif; }
   #app { display: flex; height: 100%; }
-  #map { flex: 1; }
+  #mapWrap { flex: 1; position: relative; }
+  #map { position: absolute; inset: 0; }
+
+  /* Base station GPS telemetry box, floats over the map */
+  #gpsBox { position: absolute; top: 10px; left: 54px; z-index: 1000; width: 230px;
+            background: rgba(10, 14, 20, 0.88); color: #e5e7eb; border: 1px solid #334155; border-radius: 6px;
+            padding: 8px 10px; font-family: ui-monospace, Consolas, monospace; font-size: 13px; pointer-events: none; }
+  .gps-head { display: flex; align-items: center; gap: 6px; font-size: 11px; letter-spacing: 1px; color: #94a3b8;
+              border-bottom: 1px solid #334155; padding-bottom: 5px; margin-bottom: 5px; }
+  .gps-head #gpsState { margin-left: auto; font-weight: bold; }
+  .gps-dot { width: 8px; height: 8px; border-radius: 50%; background: #64748b; }
+  .gps-grid { display: grid; grid-template-columns: 44px 1fr; row-gap: 2px; }
+  .gps-grid .k { color: #64748b; }
+  .gps-grid .v { text-align: right; font-size: 15px; color: #f8fafc; font-variant-numeric: tabular-nums; }
   #panel { width: 300px; padding: 12px; box-sizing: border-box; overflow-y: auto; background: #f4f4f6; border-left: 1px solid #ccc; }
   button { display: block; width: 100%; margin: 4px 0; padding: 8px; font-size: 14px; cursor: pointer; }
   button.active { background: #2563eb; color: #fff; }
@@ -17,11 +30,24 @@
   .wp-icon { background: #2563eb; color: #fff; border-radius: 50%; width: 24px; height: 24px; line-height: 24px; text-align: center; font-weight: bold; border: 2px solid #fff; box-shadow: 0 0 3px #000; }
   .wp-icon.bad { background: #dc2626; }
   h3 { margin: 12px 0 4px; }
+  button.connected { background: #16a34a; color: #fff; }
+  #espLog { height: 120px; }
 </style>
 </head>
 <body>
 <div id="app">
-  <div id="map"></div>
+  <div id="mapWrap">
+    <div id="map"></div>
+    <div id="gpsBox">
+      <div class="gps-head"><span id="gpsDot" class="gps-dot"></span>BASE GPS<span id="gpsState">NO LINK</span></div>
+      <div class="gps-grid">
+        <span class="k">LAT</span>  <span id="gpsLat"  class="v">--</span>
+        <span class="k">LON</span>  <span id="gpsLon"  class="v">--</span>
+        <span class="k">SATS</span> <span id="gpsSats" class="v">--</span>
+        <span class="k">HDOP</span> <span id="gpsHdop" class="v">--</span>
+      </div>
+    </div>
+  </div>
   <div id="panel">
     <h3>Mode</h3>
     <button id="btnWp" class="active">Add waypoints</button>
@@ -34,25 +60,38 @@
     <h3>Export</h3>
     <button id="btnCopy">Copy JSON</button>
     <button id="btnDl">Download mission.json</button>
+    <h3>Base station (USB)</h3>
+    <button id="btnConn">Connect (USB)</button>
+    <button id="btnSend">Send mission</button>
+    <textarea id="espLog" readonly placeholder="Messages from the base station show up here"></textarea>
     <div id="status"></div>
     <textarea id="out" readonly></textarea>
     <p style="font-size:12px;color:#555">Waypoints are draggable. A red waypoint is outside the boundary.</p>
   </div>
 </div>
 
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="lib/leaflet/leaflet.js"></script>
 <script>
 // ---------- Map + tile layers ----------
-const map = L.map('map').setView([39.5, -98.35], 4); // fallback: center of the US
+const FIELD_CENTER = [33.973344828295104, -117.32819390408356]; // test field center
+const map = L.map('map', { minZoom: 15 }).setView(FIELD_CENTER, 17); // minZoom 15 = lowest zoom we exported tiles for
 
+// Offline tiles exported from QGIS (USGS NAIP imagery), stored in UI/tiles/{z}/{x}/{y}.jpg
+const local = L.tileLayer('tiles/{z}/{x}/{y}.jpg', {
+  minZoom: 15, maxZoom: 21,
+  maxNativeZoom: 18,          // past z18, stretch the z18 tiles instead of showing blank
+  attribution: 'Imagery: USGS NAIP'
+});
+
+// Online layers, only work with internet. Kept as extras in the layer picker.
 const osm = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
   maxZoom: 19, attribution: '&copy; OpenStreetMap contributors'
 });
 const sat = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
   maxZoom: 19, attribution: 'Tiles &copy; Esri'
 });
-sat.addTo(map);
-L.control.layers({ 'Satellite (Esri)': sat, 'Street (OSM)': osm }).addTo(map);
+local.addTo(map);
+L.control.layers({ 'Offline (field)': local, 'Satellite (Esri, online)': sat, 'Street (OSM, online)': osm }).addTo(map);
 L.control.scale({ imperial: false }).addTo(map);
 
 // ---------- State ----------
@@ -173,8 +212,126 @@ function locate() {
   );
 }
 
+// ---------- USB serial to base station (Web Serial, Chrome/Edge only) ----------
+let port = null, writer = null, reader = null, readableClosed = null;
+const espLog = document.getElementById('espLog');
+const btnConn = document.getElementById('btnConn');
+
+// Add one line to the log box, keep only the last 50 lines
+function logLine(text) {
+  const lines = (espLog.value ? espLog.value.split('\n') : []).concat(text).slice(-50);
+  espLog.value = lines.join('\n');
+  espLog.scrollTop = espLog.scrollHeight;
+}
+
+function setConnected(on) {
+  btnConn.textContent = on ? 'Connected (click to disconnect)' : 'Connect (USB)';
+  btnConn.classList.toggle('connected', on);
+}
+
+async function connect() {
+  if (!('serial' in navigator)) { alert('Web Serial not available. Use Chrome or Edge, opened from http://localhost.'); return; }
+  try {
+    port = await navigator.serial.requestPort();      // browser pops up a COM port picker
+    await port.open({ baudRate: 115200 });            // must match Serial.begin() on the ESP32
+  } catch (e) {
+    port = null;
+    alert('Could not open port: ' + e.message + '\n(Is the PlatformIO serial monitor still open?)');
+    return;
+  }
+  writer = port.writable.getWriter();
+  setConnected(true);
+  logLine('--- connected ---');
+  readLoop();
+}
+
+async function disconnect() {
+  // Order matters: stop reading, release the writer, then close the port
+  try { if (reader) { await reader.cancel(); } } catch (e) {}
+  try { if (readableClosed) { await readableClosed; } } catch (e) {}
+  try { if (writer) { writer.releaseLock(); } } catch (e) {}
+  try { if (port) { await port.close(); } } catch (e) {}
+  port = null; writer = null; reader = null; readableClosed = null;
+  lastGpsMs = 0;
+  setGpsBox('NO LINK');
+  setConnected(false);
+  logLine('--- disconnected ---');
+}
+
+// Read text from the ESP32 and split it into lines (data can arrive in random-sized chunks)
+async function readLoop() {
+  const decoder = new TextDecoderStream();
+  readableClosed = port.readable.pipeTo(decoder.writable).catch(() => {});
+  reader = decoder.readable.getReader();
+  let buffer = '';
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += value;
+      let nl;
+      while ((nl = buffer.indexOf('\n')) >= 0) {
+        const line = buffer.slice(0, nl).replace(/\r$/, '');
+        buffer = buffer.slice(nl + 1);
+        if (line) handleEspLine(line);
+      }
+    }
+  } catch (e) {
+    logLine('--- read error: ' + e.message + ' ---');
+  }
+}
+
+// ---------- Base station GPS telemetry box ----------
+// The ESP32 sends one "GPS,..." line per second (format is in main.cpp). Those go to the box, everything else to the log.
+const GPS_COLORS = { FIX: '#22c55e', NOFIX: '#f59e0b', NODATA: '#ef4444', STALE: '#64748b', 'NO LINK': '#64748b' };
+let lastGpsMs = 0;   // when the last GPS line arrived, 0 = none yet
+
+function setGpsBox(state, lat = '--', lon = '--', sats = '--', hdop = '--') {
+  document.getElementById('gpsState').textContent = state;
+  document.getElementById('gpsState').style.color = GPS_COLORS[state];
+  document.getElementById('gpsDot').style.background = GPS_COLORS[state];
+  document.getElementById('gpsLat').textContent = lat;
+  document.getElementById('gpsLon').textContent = lon;
+  document.getElementById('gpsSats').textContent = sats;
+  document.getElementById('gpsHdop').textContent = hdop;
+}
+
+function handleEspLine(line) {
+  if (!line.startsWith('GPS,')) { logLine('ESP: ' + line); return; }
+  const f = line.split(',');   // f[0] = "GPS", f[1] = state
+  lastGpsMs = Date.now();
+  if (f[1] === 'FIX')        setGpsBox('FIX', (+f[2]).toFixed(6), (+f[3]).toFixed(6), f[4], f[5]);
+  else if (f[1] === 'NOFIX') setGpsBox('NOFIX', '--', '--', f[2]);
+  else                       setGpsBox('NODATA');
+}
+
+// No GPS line for 3 s while connected -> mark STALE so old numbers don't look live
+setInterval(() => {
+  if (port && lastGpsMs && Date.now() - lastGpsMs > 3000) {
+    document.getElementById('gpsState').textContent = 'STALE';
+    document.getElementById('gpsState').style.color = GPS_COLORS.STALE;
+    document.getElementById('gpsDot').style.background = GPS_COLORS.STALE;
+  }
+}, 1000);
+
+btnConn.onclick = () => (port ? disconnect() : connect());
+
+document.getElementById('btnSend').onclick = async () => {
+  if (!writer) { alert('Connect to the base station first.'); return; }
+  const data = exportData();
+  if (!data.waypoints.length) { alert('No waypoints to send.'); return; }
+  const line = JSON.stringify(data) + '\n';  // compact, one line. Newline = end of message
+  await writer.write(new TextEncoder().encode(line));
+  logLine(`SENT: ${data.waypoints.length} waypoint(s), ${data.boundary.length} boundary pt(s), ${line.length} bytes`);
+};
+
+// USB cable unplugged
+if ('serial' in navigator) {
+  navigator.serial.addEventListener('disconnect', e => { if (e.target === port) disconnect(); });
+}
+
 redraw();
-locate();
+// No locate() on startup: laptops usually need internet for location. Map starts on FIELD_CENTER instead.
 </script>
 </body>
 </html>
