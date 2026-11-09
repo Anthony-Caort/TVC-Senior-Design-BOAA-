@@ -1,35 +1,39 @@
 #include <Arduino.h>
-#include <WiFi.h>
-#include <WebServer.h>
+#include <TinyGPSPlus.h>
 
+#define GPS_RX_PIN  16   // ESP32 pin that receives (wire to GPS TX)
+#define GPS_TX_PIN  17   // ESP32 pin that transmits (wire to GPS RX)
+#define GPS_BAUD    9600
 
-const char* AP_SSID = "BaseStation";
-const char* AP_PASS = "base12345";   // must be at least 8 characters
-
-WebServer server(80);
-
-void handleRoot() {
-  server.send(200, "text/html", "<h1>Base station UI will be here in the future</h1>");
-}
+TinyGPSPlus gps;
+HardwareSerial GPSserial(2);
 
 void setup() {
   Serial.begin(115200);
-  delay(500);
-
-  WiFi.mode(WIFI_AP);                                 // act as an access point only
-  bool ok = WiFi.softAP(AP_SSID, AP_PASS, 1, 0, 4);   // ssid, pass, channel, hidden, max clients
-
-  Serial.println(ok ? "AP started" : "AP failed");
-  Serial.print("AP IP: ");
-  Serial.println(WiFi.softAPIP());                 // 192.168.4.1 by default
-
-  server.on("/", handleRoot);
-  server.begin();
+  GPSserial.begin(GPS_BAUD, SERIAL_8N1, GPS_RX_PIN, GPS_TX_PIN);
+  Serial.println("GPS starting...");
 }
 
 void loop() {
-  Serial.print("Connected clients: ");
-  Serial.println(WiFi.softAPgetStationNum());
-  delay(2000);
-  server.handleClient();
+  while (GPSserial.available()) {
+    gps.encode(GPSserial.read());
+  }
+
+  static uint32_t last = 0;
+  if (millis() - last >= 1000) {
+    last = millis();
+
+    if (gps.charsProcessed() < 10) {
+      Serial.println("No data from GPS. Check wiring and baud rate.");
+    } else if (gps.location.isValid()) {
+      Serial.printf("lat=%.6f  lon=%.6f  sats=%u  hdop=%.1f  speed=%.2f m/s  course=%.1f deg  age=%lu ms\n",
+                    gps.location.lat(), gps.location.lng(),
+                    gps.satellites.value(), gps.hdop.hdop(),
+                    gps.speed.mps(), gps.course.deg(),
+                    (unsigned long)gps.location.age());
+    } else {
+      Serial.printf("No fix yet. sats=%u  (go outside, wait a few minutes)\n",
+                    gps.satellites.value());
+    }
+  }
 }
