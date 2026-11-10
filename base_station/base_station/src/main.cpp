@@ -1,13 +1,10 @@
 #include <Arduino.h>
-#include <ArduinoJson.h>
 #include <WiFi.h>
 #include <WebServer.h>
 #include <LittleFS.h>
-#include "gps.h"
 
-#define MAX_WAYPOINTS      50     // max waypoints we store from one mission
-#define MAX_BOUNDARY_PTS   50     // max boundary vertices we store
-#define MISSION_LINE_MAX   8192   // max length of one mission JSON line from the UI
+#include "gps.h"
+#include "mission.h"
 
 // WiFi access point the phone/laptop joins to open the UI at http://192.168.4.1
 const char* AP_SSID = "BaseStation";
@@ -16,66 +13,13 @@ const char* AP_PASS = "base12345";   // must be at least 8 characters
 WebServer server(80);
 bool fsMounted = false;   // LittleFS holds the UI files (index.html, Leaflet, tiles)
 
-// ---------- Mission storage ----------
-// geo_point_t (gps.h) uses double, float only has ~7 significant digits (about 1 m error here)
-geo_point_t missionWaypoints[MAX_WAYPOINTS];
-int         missionWaypointCount = 0;
-geo_point_t missionBoundary[MAX_BOUNDARY_PTS];
-int         missionBoundaryCount = 0;
-
+// ---------- USB serial link ----------
 // Characters from the UI collect here until a '\n' arrives (one mission = one line)
-char   missionLineBuf[MISSION_LINE_MAX];
+char   missionLineBuf[MISSION_JSON_MAX];
 size_t missionLineLen = 0;
 bool   missionLineOverflow = false;
 
-// Parse one mission JSON line from the UI and store it.
-// Returns the reply text (ACK/ERR lines, each ending in '\n'), the caller sends it over USB or WiFi.
-String processMission(const char* line) {
-  char buf[96];
-  JsonDocument doc;
-  DeserializationError err = deserializeJson(doc, line);
-  if (err) {
-    return String("ERR bad JSON: ") + err.c_str() + "\n";
-  }
-
-  JsonArray waypoints = doc["waypoints"];
-  JsonArray boundary  = doc["boundary"];
-  if (waypoints.isNull()) {
-    return "ERR no waypoints array\n";
-  }
-  if (waypoints.size() > MAX_WAYPOINTS || boundary.size() > MAX_BOUNDARY_PTS) {
-    snprintf(buf, sizeof(buf), "ERR too many points (max %d waypoints, %d boundary)\n", MAX_WAYPOINTS, MAX_BOUNDARY_PTS);
-    return String(buf);
-  }
-
-  missionWaypointCount = 0;
-  for (JsonObject wp : waypoints) {
-    missionWaypoints[missionWaypointCount].lat = wp["lat"];
-    missionWaypoints[missionWaypointCount].lon = wp["lon"];
-    missionWaypointCount++;
-  }
-
-  missionBoundaryCount = 0;
-  for (JsonObject pt : boundary) {
-    missionBoundary[missionBoundaryCount].lat = pt["lat"];
-    missionBoundary[missionBoundaryCount].lon = pt["lon"];
-    missionBoundaryCount++;
-  }
-
-  snprintf(buf, sizeof(buf), "ACK %d waypoints, %d boundary pts\n", missionWaypointCount, missionBoundaryCount);
-  String reply = buf;
-  for (int i = 0; i < missionWaypointCount; i++) {
-    snprintf(buf, sizeof(buf), "  WP%d lat=%.7f lon=%.7f\n", i + 1, missionWaypoints[i].lat, missionWaypoints[i].lon);
-    reply += buf;
-  }
-
-  // TODO: forward mission to rover over radio
-
-  return reply;
-}
-
-// ---------- USB serial link ----------
-// Non-blocking: grab whatever USB serial bytes arrived, run processMission on each full line.
+// Non-blocking: grab whatever USB serial bytes arrived, run mission_process_json on each full line.
 // (readStringUntil would block up to 1 s and the GPS UART buffer could overflow meanwhile)
 void pollMissionSerial() {
   while (Serial.available()) {
@@ -85,17 +29,17 @@ void pollMissionSerial() {
 
     if (c == '\n') {
       if (missionLineOverflow) {
-        Serial.printf("ERR mission too long (max %d bytes)\n", MISSION_LINE_MAX - 1);
+        Serial.printf("ERR mission too long (max %d bytes)\n", MISSION_JSON_MAX - 1);
       } else if (missionLineLen > 0) {
         missionLineBuf[missionLineLen] = '\0';
-        Serial.print(processMission(missionLineBuf));
+        Serial.print(mission_process_json(missionLineBuf));
       }
       missionLineLen = 0;
       missionLineOverflow = false;
       continue;
     }
 
-    if (missionLineLen < MISSION_LINE_MAX - 1) {
+    if (missionLineLen < MISSION_JSON_MAX - 1) {
       missionLineBuf[missionLineLen++] = c;
     } else {
       missionLineOverflow = true;   // keep reading until '\n', then report the error
@@ -130,11 +74,11 @@ void handleApiMission() {
     return;
   }
   const String& body = server.arg("plain");
-  if (body.length() >= MISSION_LINE_MAX) {
+  if (body.length() >= MISSION_JSON_MAX) {
     server.send(413, "text/plain", "ERR mission too long\n");
     return;
   }
-  String reply = processMission(body.c_str());
+  String reply = mission_process_json(body.c_str());
   Serial.print("WIFI ");      // also show WiFi missions on USB, handy for debugging
   Serial.print(reply);
   server.send(200, "text/plain", reply);

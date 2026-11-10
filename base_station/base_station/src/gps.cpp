@@ -3,7 +3,7 @@
 //NMEA sentence parser, also stores the last decoded values (location, sats, hdop, ...)
 static TinyGPSPlus gps_parser;
 
-//acts like HAL's UART object, we're using UART2
+//its like HAL's UART object, we're using UART2
 //it also has an RX buffer, unlike HAL
 static HardwareSerial gps_uart(2);
 
