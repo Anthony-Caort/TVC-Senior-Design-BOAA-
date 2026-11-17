@@ -11,28 +11,34 @@
   #mapWrap { flex: 1; position: relative; }
   #map { position: absolute; inset: 0; }
 
-  /* Base station GPS telemetry box, floats over the map */
-  #gpsBox { position: absolute; top: 10px; left: 54px; z-index: 1000; width: 230px;
-            background: rgba(10, 14, 20, 0.88); color: #e5e7eb; border: 1px solid #334155; border-radius: 6px;
-            padding: 8px 10px; font-family: ui-monospace, Consolas, monospace; font-size: 13px; pointer-events: none; }
-  .gps-head { display: flex; align-items: center; gap: 6px; font-size: 11px; letter-spacing: 1px; color: #94a3b8;
-              border-bottom: 1px solid #334155; padding-bottom: 5px; margin-bottom: 5px; }
-  .gps-head #gpsState { margin-left: auto; font-weight: bold; }
-  .gps-dot { width: 8px; height: 8px; border-radius: 50%; background: #64748b; }
-  .gps-grid { display: grid; grid-template-columns: 44px 1fr; row-gap: 2px; }
-  .gps-grid .k { color: #64748b; }
-  .gps-grid .v { text-align: right; font-size: 15px; color: #f8fafc; font-variant-numeric: tabular-nums; }
+  /* Telemetry boxes (base GPS, rover), stacked over the top-left of the map */
+  #telem { position: absolute; top: 10px; left: 54px; z-index: 1000; width: 230px;
+           display: flex; flex-direction: column; gap: 8px; pointer-events: none; }
+  .tbox { background: rgba(10, 14, 20, 0.88); color: #e5e7eb; border: 1px solid #334155; border-radius: 6px;
+          padding: 8px 10px; font-family: ui-monospace, Consolas, monospace; font-size: 13px; }
+  .tbox-head { display: flex; align-items: center; gap: 6px; font-size: 11px; letter-spacing: 1px; color: #94a3b8;
+               border-bottom: 1px solid #334155; padding-bottom: 5px; margin-bottom: 5px; }
+  .tbox-head .state { margin-left: auto; font-weight: bold; }
+  .tbox-dot { width: 8px; height: 8px; border-radius: 50%; background: #64748b; }
+  .tbox-grid { display: grid; grid-template-columns: 44px 1fr; row-gap: 2px; }
+  .tbox-grid .k { color: #64748b; }
+  .tbox-grid .v { text-align: right; font-size: 15px; color: #f8fafc; font-variant-numeric: tabular-nums; }
+  #roverBox .tbox-head .name { color: #22d3ee; }
 
-  /* Base station marker on the map: dark square + antenna icon + pulse ring while live, gray when stale */
-  .base-icon { position: relative; width: 28px; height: 28px; }
-  .base-icon .core { position: absolute; inset: 0; box-sizing: border-box; background: #0a0e14; color: #22c55e;
-                     border: 2px solid #22c55e; border-radius: 6px; box-shadow: 0 0 4px #000;
+  /* Map markers for the base (green square, antenna) and rover (cyan circle, rover):
+     icon + pulse ring while live, gray at the last known spot when stale */
+  .live-icon { position: relative; width: 28px; height: 28px; --c: #22c55e; --r: 6px; }
+  .live-icon.rover { --c: #22d3ee; --r: 50%; }
+  .live-icon .core { position: absolute; inset: 0; box-sizing: border-box; background: #0a0e14; color: var(--c);
+                     border: 2px solid var(--c); border-radius: var(--r); box-shadow: 0 0 4px #000;
                      display: flex; align-items: center; justify-content: center; }
-  .base-icon .pulse { position: absolute; inset: 0; border: 2px solid #22c55e; border-radius: 6px;
-                      animation: basePulse 1.8s ease-out infinite; }
-  .base-icon.stale .core { color: #94a3b8; border-color: #64748b; }
-  .base-icon.stale .pulse { display: none; }
-  @keyframes basePulse { from { transform: scale(1); opacity: 0.8; } to { transform: scale(2.2); opacity: 0; } }  #panel { width: 300px; padding: 12px; box-sizing: border-box; overflow-y: auto; background: #f4f4f6; border-left: 1px solid #ccc; }
+  .live-icon .pulse { position: absolute; inset: 0; border: 2px solid var(--c); border-radius: var(--r);
+                      animation: livePulse 1.8s ease-out infinite; }
+  .live-icon.stale .core { color: #94a3b8; border-color: #64748b; }
+  .live-icon.stale .pulse { display: none; }
+  @keyframes livePulse { from { transform: scale(1); opacity: 0.8; } to { transform: scale(2.2); opacity: 0; } }
+
+  #panel { width: 300px; padding: 12px; box-sizing: border-box; overflow-y: auto; background: #f4f4f6; border-left: 1px solid #ccc; }
   button { display: block; width: 100%; margin: 4px 0; padding: 8px; font-size: 14px; cursor: pointer; }
   button.active { background: #2563eb; color: #fff; }
   textarea { width: 100%; height: 200px; font-family: monospace; font-size: 12px; box-sizing: border-box; }
@@ -55,13 +61,24 @@
 <div id="app">
   <div id="mapWrap">
     <div id="map"></div>
-    <div id="gpsBox">
-      <div class="gps-head"><span id="gpsDot" class="gps-dot"></span>BASE GPS<span id="gpsState">NO LINK</span></div>
-      <div class="gps-grid">
-        <span class="k">LAT</span>  <span id="gpsLat"  class="v">--</span>
-        <span class="k">LON</span>  <span id="gpsLon"  class="v">--</span>
-        <span class="k">SATS</span> <span id="gpsSats" class="v">--</span>
-        <span class="k">HDOP</span> <span id="gpsHdop" class="v">--</span>
+    <div id="telem">
+      <div id="gpsBox" class="tbox">
+        <div class="tbox-head"><span id="gpsDot" class="tbox-dot"></span><span class="name">BASE GPS</span><span id="gpsState" class="state">NO LINK</span></div>
+        <div class="tbox-grid">
+          <span class="k">LAT</span>  <span id="gpsLat"  class="v">--</span>
+          <span class="k">LON</span>  <span id="gpsLon"  class="v">--</span>
+          <span class="k">SATS</span> <span id="gpsSats" class="v">--</span>
+          <span class="k">HDOP</span> <span id="gpsHdop" class="v">--</span>
+        </div>
+      </div>
+      <div id="roverBox" class="tbox">
+        <div class="tbox-head"><span id="rovDot" class="tbox-dot"></span><span class="name">ROVER</span><span id="rovState" class="state">NO LINK</span></div>
+        <div class="tbox-grid">
+          <span class="k">LAT</span>  <span id="rovLat"  class="v">--</span>
+          <span class="k">LON</span>  <span id="rovLon"  class="v">--</span>
+          <span class="k">SATS</span> <span id="rovSats" class="v">--</span>
+          <span class="k">HDOP</span> <span id="rovHdop" class="v">--</span>
+        </div>
       </div>
     </div>
   </div>
@@ -91,17 +108,24 @@
 <script src="config.js"></script>
 <script>
 // ---------- Config (config.js: laptop = usb, ESP32-served copy = wifi) ----------
-const CFG = Object.assign({ transport: 'usb', maxNativeZoom: 18 }, window.UI_CONFIG);
+const CFG = Object.assign({ transport: 'usb', maxNativeZoom: 18, tileBounds: null }, window.UI_CONFIG);
 const WIFI = CFG.transport === 'wifi';
 
 // ---------- Map + tile layers ----------
 const FIELD_CENTER = [33.973344828295104, -117.32819390408356]; // test field center
-const map = L.map('map', { minZoom: 15 }).setView(FIELD_CENTER, 17); // minZoom 15 = lowest zoom we exported tiles for
+// minZoom 15 = lowest zoom we exported tiles for. maxBounds keeps the view on the area we have tiles for
+// (viscosity 1 = hard wall, no rubber-banding), so the ESP32 isn't asked for tiles it doesn't have.
+const map = L.map('map', {
+  minZoom: 15,
+  maxBounds: CFG.tileBounds || undefined,
+  maxBoundsViscosity: 1.0
+}).setView(FIELD_CENTER, 17);
 
 // Offline tiles exported from QGIS (USGS NAIP imagery), stored in UI/tiles/{z}/{x}/{y}.jpg
 const local = L.tileLayer('tiles/{z}/{x}/{y}.jpg', {
   minZoom: 15, maxZoom: 21,
   maxNativeZoom: CFG.maxNativeZoom,   // past this zoom, stretch the last tiles instead of showing blank (laptop 18, ESP32 17)
+  bounds: CFG.tileBounds || undefined, // never request tiles outside this box (each would be a 404)
   attribution: 'Imagery: USGS NAIP'
 });
 
@@ -280,9 +304,7 @@ async function disconnect() {
   try { if (writer) { writer.releaseLock(); } } catch (e) {}
   try { if (port) { await port.close(); } } catch (e) {}
   port = null; writer = null; reader = null; readableClosed = null;
-  lastGpsMs = 0;
-  setGpsBox('NO LINK');
-  setBaseLive(false);
+  resetFeeds();
   setConnected(false);
   logLine('--- disconnected ---');
 }
@@ -310,87 +332,117 @@ async function readLoop() {
   }
 }
 
-// ---------- Base station GPS telemetry box ----------
-// The ESP32 sends one "GPS,..." line per second (format is in main.cpp). Those go to the box, everything else to the log.
-const GPS_COLORS = { FIX: '#22c55e', NOFIX: '#f59e0b', NODATA: '#ef4444', STALE: '#64748b', 'NO LINK': '#64748b' };
-let lastGpsMs = 0;   // when the last GPS line arrived, 0 = none yet
+// ---------- Telemetry boxes ----------
+// The base station sends one "GPS,..." line (its own GPS) and one "ROVER,..." line (rover telemetry it received) per second:
+//   GPS,NODATA | GPS,NOFIX,<sats> | GPS,FIX,<lat>,<lon>,<sats>,<hdop>
+//   ROVER,NOLINK | ROVER,NODATA | ROVER,NOFIX,<sats> | ROVER,FIX,<lat>,<lon>,<sats>,<hdop>
+// (ROVER,NOLINK = base station hasn't heard from the rover recently.) Anything else goes to the log.
+const STATE_COLORS = { FIX: '#22c55e', NOFIX: '#f59e0b', NODATA: '#ef4444', STALE: '#64748b', 'NO LINK': '#64748b' };
 
-function setGpsBox(state, lat = '--', lon = '--', sats = '--', hdop = '--') {
-  document.getElementById('gpsState').textContent = state;
-  document.getElementById('gpsState').style.color = GPS_COLORS[state];
-  document.getElementById('gpsDot').style.background = GPS_COLORS[state];
-  document.getElementById('gpsLat').textContent = lat;
-  document.getElementById('gpsLon').textContent = lon;
-  document.getElementById('gpsSats').textContent = sats;
-  document.getElementById('gpsHdop').textContent = hdop;
+// prefix = id prefix of the box elements ('gps' or 'rov')
+function setBox(prefix, state, lat = '--', lon = '--', sats = '--', hdop = '--') {
+  const el = id => document.getElementById(prefix + id);
+  el('State').textContent = state;
+  el('State').style.color = STATE_COLORS[state];
+  el('Dot').style.background = STATE_COLORS[state];
+  el('Lat').textContent = lat;
+  el('Lon').textContent = lon;
+  el('Sats').textContent = sats;
+  el('Hdop').textContent = hdop;
 }
 
-// ---------- Base station marker on the map ----------
-// Shows up on the first GPS FIX. Green + pulsing while live, gray at the last known spot when fix/link is lost.
+// ---------- Base station + rover markers on the map ----------
+// Each shows up on its first FIX. Colored + pulsing while live, gray at the last known spot when fix/link is lost.
 const ANTENNA_SVG = `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
   <path d="M12 13v8"/><path d="M8 21h8"/><circle cx="12" cy="11" r="2"/>
   <path d="M8.5 7.5a5 5 0 0 0 0 7"/><path d="M15.5 7.5a5 5 0 0 1 0 7"/>
   <path d="M5.5 4.5a9 9 0 0 0 0 13"/><path d="M18.5 4.5a9 9 0 0 1 0 13"/></svg>`;
+const ROVER_SVG = `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M9 7V4h6v3"/><rect x="3" y="7" width="18" height="8" rx="2"/>
+  <circle cx="6.5" cy="18" r="2"/><circle cx="12" cy="18" r="2"/><circle cx="17.5" cy="18" r="2"/></svg>`;
 const HDOP_TO_METERS = 5;   // rough accuracy estimate: HDOP x ~5 m (typical consumer GPS), only for the circle size
 
-let baseMarker = null;      // the antenna icon
-let baseAccuracy = null;    // faint circle showing rough GPS accuracy
-let baseLive = false;
-
-function baseIcon(live) {
-  return L.divIcon({
+// kind = 'base' | 'rover' (CSS class), color = live color of the accuracy circle, zIndex = rover drawn above base
+function makeLiveMarker(kind, svg, color, zIndex) {
+  let marker = null;     // the icon
+  let accuracy = null;   // faint circle showing rough GPS accuracy
+  let live = false;
+  const icon = on => L.divIcon({
     className: '',
-    html: `<div class="base-icon ${live ? '' : 'stale'}"><div class="pulse"></div><div class="core">${ANTENNA_SVG}</div></div>`,
+    html: `<div class="live-icon ${kind} ${on ? '' : 'stale'}"><div class="pulse"></div><div class="core">${svg}</div></div>`,
     iconSize: [28, 28], iconAnchor: [14, 14]
   });
+  const self = {
+    update(lat, lon, hdop) {
+      const pos = [lat, lon];
+      const radius = Math.max(hdop * HDOP_TO_METERS, 2);
+      if (!marker) {
+        // interactive: false -> clicks go through to the map, so waypoints can still be placed next to it
+        accuracy = L.circle(pos, { radius, color, weight: 1, fillOpacity: 0.08, interactive: false }).addTo(map);
+        marker = L.marker(pos, { icon: icon(true), interactive: false, zIndexOffset: zIndex }).addTo(map);
+        live = true;
+      } else {
+        marker.setLatLng(pos);
+        accuracy.setLatLng(pos).setRadius(radius);
+      }
+      self.setLive(true);
+    },
+    // Only swap the icon when the state changes, otherwise the pulse animation restarts every second
+    setLive(on) {
+      if (!marker || live === on) return;
+      live = on;
+      marker.setIcon(icon(on));
+      accuracy.setStyle({ color: on ? color : '#64748b' });
+    }
+  };
+  return self;
 }
 
-function updateBaseMarker(lat, lon, hdop) {
-  const pos = [lat, lon];
-  const radius = Math.max(hdop * HDOP_TO_METERS, 2);
-  if (!baseMarker) {
-    // interactive: false -> clicks go through to the map, so waypoints can still be placed next to the base
-    baseAccuracy = L.circle(pos, { radius, color: '#22c55e', weight: 1, fillOpacity: 0.08, interactive: false }).addTo(map);
-    baseMarker = L.marker(pos, { icon: baseIcon(true), interactive: false, zIndexOffset: -100 }).addTo(map);
-    baseLive = true;
-  } else {
-    baseMarker.setLatLng(pos);
-    baseAccuracy.setLatLng(pos).setRadius(radius);
-  }
-  setBaseLive(true);
-}
-
-// Only swap the icon when the state changes, otherwise the pulse animation restarts every second
-function setBaseLive(live) {
-  if (!baseMarker || baseLive === live) return;
-  baseLive = live;
-  baseMarker.setIcon(baseIcon(live));
-  baseAccuracy.setStyle({ color: live ? '#22c55e' : '#64748b' });
-}
+// One entry per line tag the base station sends. lastMs = when the last line arrived, 0 = none yet
+const FEEDS = {
+  GPS:   { box: 'gps', marker: makeLiveMarker('base',  ANTENNA_SVG, '#22c55e', -100), lastMs: 0 },
+  ROVER: { box: 'rov', marker: makeLiveMarker('rover', ROVER_SVG,   '#22d3ee',  100), lastMs: 0 }
+};
 
 function handleEspLine(line) {
-  if (!line.startsWith('GPS,')) { logLine('ESP: ' + line); return; }
-  const f = line.split(',');   // f[0] = "GPS", f[1] = state
-  lastGpsMs = Date.now();
+  const f = line.split(',');   // f[0] = tag ("GPS" / "ROVER"), f[1] = state
+  const feed = FEEDS[f[0]];
+  if (!feed) { logLine('ESP: ' + line); return; }
+  feed.lastMs = Date.now();
   if (f[1] === 'FIX') {
-    setGpsBox('FIX', (+f[2]).toFixed(6), (+f[3]).toFixed(6), f[4], f[5]);
-    updateBaseMarker(+f[2], +f[3], +f[5]);
+    setBox(feed.box, 'FIX', (+f[2]).toFixed(6), (+f[3]).toFixed(6), f[4], f[5]);
+    feed.marker.update(+f[2], +f[3], +f[5]);
   } else if (f[1] === 'NOFIX') {
-    setGpsBox('NOFIX', '--', '--', f[2]);
-    setBaseLive(false);
+    setBox(feed.box, 'NOFIX', '--', '--', f[2]);
+    feed.marker.setLive(false);
+  } else if (f[1] === 'NOLINK') {
+    setBox(feed.box, 'NO LINK');
+    feed.marker.setLive(false);
   } else {
-    setGpsBox('NODATA');
-    setBaseLive(false);
+    setBox(feed.box, 'NODATA');
+    feed.marker.setLive(false);
   }
 }
 
-// No GPS line for 3 s while connected -> mark STALE so old numbers don't look live
+// Link to the base station lost (USB unplugged / WiFi dropped): everything back to NO LINK, markers gray
+function resetFeeds() {
+  for (const feed of Object.values(FEEDS)) {
+    feed.lastMs = 0;
+    setBox(feed.box, 'NO LINK');
+    feed.marker.setLive(false);
+  }
+}
+
+// No line for 3 s while connected -> mark STALE so old numbers don't look live
 setInterval(() => {
-  if ((port || wifiLinked) && lastGpsMs && Date.now() - lastGpsMs > 3000) {
-    document.getElementById('gpsState').textContent = 'STALE';
-    document.getElementById('gpsState').style.color = GPS_COLORS.STALE;
-    document.getElementById('gpsDot').style.background = GPS_COLORS.STALE;
-    setBaseLive(false);
+  if (!(port || wifiLinked)) return;
+  for (const feed of Object.values(FEEDS)) {
+    if (feed.lastMs && Date.now() - feed.lastMs > 3000) {
+      document.getElementById(feed.box + 'State').textContent = 'STALE';
+      document.getElementById(feed.box + 'State').style.color = STATE_COLORS.STALE;
+      document.getElementById(feed.box + 'Dot').style.background = STATE_COLORS.STALE;
+      feed.marker.setLive(false);
+    }
   }
 }, 1000);
 
@@ -398,9 +450,28 @@ btnConn.onclick = () => (port ? disconnect() : connect());
 
 // ---------- WiFi link (only when the ESP32 serves this page) ----------
 // GPS:     GET  api/gps     -> same "GPS,..." line the USB link prints, polled once a second
+// Rover:   GET  api/rover   -> same "ROVER,..." line the USB link prints, polled once a second
 // Mission: POST api/mission -> same JSON line as USB, reply is the same ACK/ERR text
+// api/gps decides whether the link is up. api/rover failing (e.g. 404 on older firmware) is just ignored.
 let wifiLinked = false;
 let gpsPollBusy = false;
+let roverPollBusy = false;
+
+async function pollWifiRover() {
+  if (roverPollBusy || !wifiLinked) return;
+  roverPollBusy = true;
+  try {
+    const r = await fetch('api/rover', { cache: 'no-store', signal: AbortSignal.timeout(2500) });
+    if (r.ok) {
+      const text = (await r.text()).trim();
+      if (text.startsWith('ROVER,')) handleEspLine(text);
+    }
+  } catch (e) {
+    // link loss is reported by pollWifiGps
+  } finally {
+    roverPollBusy = false;
+  }
+}
 
 async function pollWifiGps() {
   if (gpsPollBusy) return;   // previous request still waiting, don't pile up
@@ -414,8 +485,7 @@ async function pollWifiGps() {
     if (wifiLinked) {
       wifiLinked = false;
       setConnected(false);
-      setGpsBox('NO LINK');
-      setBaseLive(false);
+      resetFeeds();
       logLine('--- WiFi link lost ---');
     }
   } finally {
@@ -435,6 +505,7 @@ if (WIFI) {
   setConnected(false);
   pollWifiGps();
   setInterval(pollWifiGps, 1000);
+  setInterval(pollWifiRover, 1000);
 }
 
 document.getElementById('btnSend').onclick = async () => {
